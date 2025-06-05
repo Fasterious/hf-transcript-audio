@@ -1,0 +1,12 @@
+gradio>=4.0.0
+whisperx>=3.1.0
+torch>=2.0.0
+torchaudio>=2.0.0
+numpy
+scipy
+librosa
+soundfile
+pyannote.audio
+transformers
+accelerate
+datasets
