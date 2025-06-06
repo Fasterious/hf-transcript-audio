@@ -10,4 +10,6 @@ git+https://github.com/m-bain/whisperx.git
 # For diarization model
 pyannote.audio==3.1.1
 huggingface_hub==0.20.3
-onnxruntime==1.16.3 # Required for pyannote
+
+# Updated onnxruntime to meet whisperx dependency requirements
+onnxruntime>=1.19.0
