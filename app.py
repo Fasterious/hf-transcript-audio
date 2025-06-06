@@ -1,259 +1,142 @@
+# Importation des bibliothèques nécessaires
 import gradio as gr
 import whisperx
-import gc
 import torch
 import os
-import tempfile
-from typing import Optional, Dict, Any
+import time
+from huggingface_hub import HfApi, HfFolder
 
-class WhisperXTranscriber:
-    def __init__(self):
-        self.model = None
-        self.align_model = None
-        self.metadata = None
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.batch_size = 16 if self.device == "cuda" else 8
-        self.compute_type = "float16" if self.device == "cuda" else "int8"
+# --- Configuration Initiale ---
+
+# Vérifier si une carte graphique (GPU) est disponible pour un traitement plus rapide
+# Si oui, on utilise 'cuda', sinon 'cpu'.
+device = "cuda" if torch.cuda.is_available() else "cpu"
+batch_size = 16  # Réduit la taille du lot si vous avez des problèmes de mémoire
+compute_type = "float16" if torch.cuda.is_available() else "int8"
+
+# Charger le modèle de transcription Whisper. 
+# "large-v3" est le plus puissant. Vous pouvez utiliser "base" ou "medium" pour des tests plus rapides.
+print("Chargement du modèle Whisper...")
+model = whisperx.load_model("large-v3", device, compute_type=compute_type)
+print("Modèle Whisper chargé.")
+
+# --- Fonction principale de transcription et diarisation ---
+
+def transcribe_and_diarize(audio_file, hf_token):
+    """
+    Cette fonction prend un fichier audio en entrée, le transcrit, identifie les locuteurs (diarisation)
+    et retourne un texte formaté avec timestamps et locuteurs.
+    """
+    if not hf_token:
+        return "Erreur : Veuillez fournir un token d'accès Hugging Face pour la diarisation.", ""
         
-    def load_model(self, model_size: str = "base"):
-        """Charge le modèle WhisperX"""
-        try:
-            # Libère la mémoire si un modèle est déjà chargé
-            if self.model is not None:
-                del self.model
-                gc.collect()
-                if self.device == "cuda":
-                    torch.cuda.empty_cache()
-            
-            # Charge le nouveau modèle
-            self.model = whisperx.load_model(
-                model_size, 
-                self.device, 
-                compute_type=self.compute_type
-            )
-            return f"✅ Modèle {model_size} chargé avec succès sur {self.device}"
-        except Exception as e:
-            return f"❌ Erreur lors du chargement du modèle: {str(e)}"
-    
-    def transcribe_audio(self, audio_file, model_size: str = "base", 
-                        align_speakers: bool = False, language: str = "auto"):
-        """Transcrit un fichier audio"""
+    try:
+        # 1. Sauvegarder le token Hugging Face pour utiliser le modèle de diarisation
+        HfFolder.save_token(hf_token)
+        print("Token Hugging Face sauvegardé temporairement.")
+        
+        # 2. Charger l'audio depuis le chemin du fichier
+        print(f"Chargement du fichier audio : {audio_file}")
         if audio_file is None:
-            return "❌ Veuillez sélectionner un fichier audio", ""
+            return "Erreur : Aucun fichier audio fourni.", ""
+            
+        audio = whisperx.load_audio(audio_file)
         
-        try:
-            # Charge le modèle si nécessaire
-            if self.model is None:
-                load_status = self.load_model(model_size)
-                if "❌" in load_status:
-                    return load_status, ""
-            
-            # Transcription initiale
-            if language == "auto":
-                audio = whisperx.load_audio(audio_file)
-                result = self.model.transcribe(audio, batch_size=self.batch_size)
-            else:
-                audio = whisperx.load_audio(audio_file)
-                result = self.model.transcribe(
-                    audio, 
-                    batch_size=self.batch_size, 
-                    language=language
-                )
-            
-            # Alignement temporel (optionnel)
-            if align_speakers:
-                try:
-                    # Charge le modèle d'alignement
-                    model_a, metadata = whisperx.load_align_model(
-                        language_code=result["language"], 
-                        device=self.device
-                    )
-                    
-                    # Aligne les segments
-                    result = whisperx.align(
-                        result["segments"], 
-                        model_a, 
-                        metadata, 
-                        audio, 
-                        self.device, 
-                        return_char_alignments=False
-                    )
-                    
-                    # Diarisation des locuteurs (optionnel)
-                    # Nécessite HF_TOKEN dans les variables d'environnement
-                    if os.getenv("HF_TOKEN"):
-                        diarize_model = whisperx.DiarizationPipeline(
-                            use_auth_token=os.getenv("HF_TOKEN"), 
-                            device=self.device
-                        )
-                        diarize_segments = diarize_model(audio)
-                        result = whisperx.assign_word_speakers(
-                            diarize_segments, result
-                        )
-                    
-                    # Libère la mémoire
-                    del model_a
-                    gc.collect()
-                    if self.device == "cuda":
-                        torch.cuda.empty_cache()
-                        
-                except Exception as e:
-                    print(f"Erreur lors de l'alignement: {e}")
-            
-            # Formate le résultat
-            transcription_text = self.format_transcription(result)
-            detailed_result = self.format_detailed_result(result)
-            
-            return f"✅ Transcription terminée (Langue détectée: {result.get('language', 'N/A')})", transcription_text, detailed_result
-            
-        except Exception as e:
-            return f"❌ Erreur lors de la transcription: {str(e)}", "", ""
-    
-    def format_transcription(self, result) -> str:
-        """Formate la transcription en texte simple"""
-        if isinstance(result, dict) and "segments" in result:
-            segments = result["segments"]
-        else:
-            segments = result
-            
-        return " ".join([segment["text"].strip() for segment in segments])
-    
-    def format_detailed_result(self, result) -> str:
-        """Formate le résultat détaillé avec timestamps"""
-        if isinstance(result, dict) and "segments" in result:
-            segments = result["segments"]
-        else:
-            segments = result
-            
-        formatted = []
-        for segment in segments:
-            start_time = f"{segment.get('start', 0):.2f}s"
-            end_time = f"{segment.get('end', 0):.2f}s"
-            text = segment.get('text', '').strip()
-            speaker = segment.get('speaker', '')
-            
-            if speaker:
-                line = f"[{start_time} - {end_time}] {speaker}: {text}"
-            else:
-                line = f"[{start_time} - {end_time}] {text}"
-            formatted.append(line)
+        # 3. Transcription avec Whisper
+        print("Début de la transcription...")
+        result = model.transcribe(audio, batch_size=batch_size)
         
-        return "\n".join(formatted)
+        # 4. Aligner la transcription avec le modèle d'alignement
+        print("Alignement de la transcription...")
+        model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
+        result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=False)
+        
+        # 5. Diarisation (identification des locuteurs)
+        print("Identification des locuteurs (diarisation)...")
+        diarize_model = whisperx.DiarizationPipeline(use_auth_token=hf_token, device=device)
+        diarize_segments = diarize_model(audio)
+        result = whisperx.assign_word_speakers(diarize_segments, result)
+        print("Diarisation terminée.")
+        
+        # 6. Formater la sortie pour une lecture facile
+        output_text = ""
+        for segment in result["segments"]:
+            start_time = time.strftime('%H:%M:%S', time.gmtime(segment['start']))
+            speaker = segment.get('speaker', 'LOCUTEUR_INCONNU')
+            text = segment['text']
+            output_text += f"[{start_time}] {speaker}:{text.strip()}\n"
+            
+        print("Formatage de la sortie terminé.")
+        return output_text
+        
+    except Exception as e:
+        print(f"Une erreur est survenue : {e}")
+        return f"Une erreur est survenue durant le traitement : {e}", ""
 
-# Initialise le transcripteur
-transcriber = WhisperXTranscriber()
+# --- Création de l'Interface Utilisateur avec Gradio ---
 
-def transcribe_interface(audio_file, model_size, align_speakers, language):
-    """Interface pour Gradio"""
-    status, transcription, detailed = transcriber.transcribe_audio(
-        audio_file, model_size, align_speakers, language
-    )
-    return status, transcription, detailed
+# Description en Markdown pour l'interface
+description = """
+Bienvenue sur **TranscribeMe** 🎙️
+<br>
+Chargez simplement un fichier audio et obtenez une transcription complète avec identification des locuteurs et horodatage.
+<br>
+**Important** : Pour l'identification des locuteurs, vous devez fournir un [**token d'accès Hugging Face**](https://huggingface.co/settings/tokens).
+"""
 
-def load_model_interface(model_size):
-    """Interface pour charger un modèle"""
-    return transcriber.load_model(model_size)
+# Thème pour un design moderne et épuré
+theme = gr.themes.Soft(
+    primary_hue="blue",
+    secondary_hue="sky",
+    neutral_hue="slate",
+).set(
+    body_background_fill_dark='*neutral_950'
+)
 
-# Interface Gradio
-with gr.Blocks(title="🎙️ Transcripteur Audio WhisperX", theme=gr.themes.Soft()) as app:
-    gr.Markdown("""
-    # 🎙️ Transcripteur Audio avec WhisperX
-    
-    Uploadez un fichier audio pour obtenir une transcription précise avec timestamps.
-    
-    **Formats supportés:** MP3, WAV, M4A, FLAC, OGG
-    """)
-    
+with gr.Blocks(theme=theme, title="TranscribeMe") as app:
+    gr.Markdown("# TranscribeMe : Votre Assistant de Transcription Audio")
+    gr.Markdown(description)
+
     with gr.Row():
         with gr.Column(scale=1):
-            # Configuration
-            gr.Markdown("### ⚙️ Configuration")
-            
-            model_size = gr.Dropdown(
-                choices=["tiny", "base", "small", "medium", "large-v2", "large-v3"],
-                value="base",
-                label="Taille du modèle",
-                info="Plus grand = plus précis mais plus lent"
+            hf_token_input = gr.Textbox(
+                label="Token d'accès Hugging Face",
+                placeholder="Collez votre token 'read' ici...",
+                type="password",
+                info="Nécessaire pour l'identification des locuteurs."
             )
-            
-            language = gr.Dropdown(
-                choices=["auto", "fr", "en", "es", "de", "it", "pt", "ru", "ja", "ko", "zh"],
-                value="auto",
-                label="Langue",
-                info="Détection automatique ou langue spécifique"
-            )
-            
-            align_speakers = gr.Checkbox(
-                label="Alignement avancé",
-                info="Active l'alignement temporel précis (plus lent)",
-                value=False
-            )
-            
-            load_btn = gr.Button("🔄 Charger le modèle", variant="secondary")
-            
-        with gr.Column(scale=2):
-            # Upload et transcription
-            gr.Markdown("### 📁 Fichier Audio")
-            
             audio_input = gr.Audio(
-                label="Sélectionnez votre fichier audio",
-                type="filepath"
+                sources=["upload", "microphone"],
+                type="filepath",
+                label="Chargez votre fichier audio ou enregistrez-vous"
             )
-            
-            transcribe_btn = gr.Button("🎯 Transcrire", variant="primary", size="lg")
-    
-    # Résultats
-    gr.Markdown("### 📝 Résultats")
-    
-    status_output = gr.Textbox(
-        label="Statut",
-        interactive=False,
-        show_copy_button=True
-    )
-    
-    with gr.Tab("Transcription Simple"):
-        transcription_output = gr.Textbox(
-            label="Transcription",
-            lines=10,
-            show_copy_button=True,
-            interactive=False
-        )
-    
-    with gr.Tab("Transcription Détaillée"):
-        detailed_output = gr.Textbox(
-            label="Transcription avec timestamps",
-            lines=15,
-            show_copy_button=True,
-            interactive=False
-        )
-    
-    # Événements
-    load_btn.click(
-        fn=load_model_interface,
-        inputs=[model_size],
-        outputs=[status_output]
-    )
-    
-    transcribe_btn.click(
-        fn=transcribe_interface,
-        inputs=[audio_input, model_size, align_speakers, language],
-        outputs=[status_output, transcription_output, detailed_output]
-    )
-    
-    # Exemple d'utilisation
-    gr.Markdown("""
-    ### 💡 Conseils d'utilisation
-    
-    - **Modèles recommandés:** `base` pour un bon équilibre, `large-v3` pour la meilleure qualité
-    - **Alignement avancé:** Améliore la précision des timestamps mais augmente le temps de traitement
-    - **GPU recommandé:** Pour de meilleures performances avec les gros modèles
-    - **Diarisation:** Définissez `HF_TOKEN` dans vos variables d'environnement pour identifier les locuteurs
-    """)
+            transcribe_button = gr.Button("Lancer la Transcription", variant="primary")
 
-if __name__ == "__main__":
-    app.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=True,
-        show_error=True
+        with gr.Column(scale=2):
+            output_transcription = gr.Textbox(
+                label="Transcription",
+                interactive=False,
+                lines=20,
+                placeholder="Le résultat de la transcription apparaîtra ici..."
+            )
+
+    transcribe_button.click(
+        fn=transcribe_and_diarize,
+        inputs=[audio_input, hf_token_input],
+        outputs=output_transcription
     )
+    
+    gr.Examples(
+        examples=[
+            [os.path.join(os.path.dirname(__file__), "audio_example.mp3"), "HF_TOKEN_ICI"],
+        ],
+        inputs=[audio_input, hf_token_input],
+        outputs=output_transcription,
+        fn=transcribe_and_diarize,
+        cache_examples=False, # Mettre à True pour le déploiement final
+        label="Exemples (cliquez pour essayer)"
+    )
+
+# --- Lancement de l'application ---
+if __name__ == "__main__":
+    app.launch(debug=True)
