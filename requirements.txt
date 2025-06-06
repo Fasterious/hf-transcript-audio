@@ -1,15 +1,20 @@
-# Core an UI
-gradio==4.19.2
-torch==2.1.2
-torchaudio==2.1.2
+# --- Fichier de dépendances flexible pour TranscribeMe ---
 
-# Transcription and Diarization Engine (WhisperX)
-# WhisperX uses the 'main' branch of whisper for latest updates
+# Pour l'interface utilisateur. Pas de version spécifiée pour obtenir la dernière compatible.
+gradio
+
+# Le moteur de PyTorch. Laisser le choix à l'environnement (ex: Hugging Face)
+# pour résoudre la version la plus appropriée, notamment pour la compatibilité CUDA.
+torch
+torchaudio
+
+# Le moteur de transcription, directement depuis sa source pour avoir la dernière version.
 git+https://github.com/m-bain/whisperx.git
 
-# For diarization model
-pyannote.audio==3.1.1
-huggingface_hub==0.20.3
-
-# Updated onnxruntime to meet whisperx dependency requirements
+# Dépendances dont on connaît les exigences minimales à cause de whisperx.
+# On laisse le choix, mais à partir d'une version minimale pour éviter les conflits.
+pyannote.audio>=3.3.2
 onnxruntime>=1.19.0
+
+# Utilitaires pour l'écosystème Hugging Face.
+huggingface_hub
