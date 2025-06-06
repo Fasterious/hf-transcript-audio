@@ -2,63 +2,60 @@
 import gradio as gr
 import whisperx
 import torch
-import os
+import os # Importé pour accéder aux variables d'environnement
 import time
 from huggingface_hub import HfApi, HfFolder
 
 # --- Configuration Initiale ---
 
-# Vérifier si une carte graphique (GPU) est disponible pour un traitement plus rapide
-# Si oui, on utilise 'cuda', sinon 'cpu'.
+# Lire le token d'accès depuis les "Secrets" de Hugging Face
+# os.getenv("HF_TOKEN") va chercher la variable que vous avez définie.
+HF_TOKEN = os.getenv("HF_TOKEN")
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
-batch_size = 16  # Réduit la taille du lot si vous avez des problèmes de mémoire
+batch_size = 16
 compute_type = "float16" if torch.cuda.is_available() else "int8"
 
-# Charger le modèle de transcription Whisper. 
-# "large-v3" est le plus puissant. Vous pouvez utiliser "base" ou "medium" pour des tests plus rapides.
-print("Chargement du modèle Whisper...")
-model = whisperx.load_model("large-v3", device, compute_type=compute_type)
-print("Modèle Whisper chargé.")
+# --- Chargement des modèles ---
 
-# --- Fonction principale de transcription et diarisation ---
+# On ne charge les modèles que si un token est bien présent.
+if HF_TOKEN:
+    print("Chargement du modèle Whisper...")
+    model = whisperx.load_model("large-v3", device, compute_type=compute_type)
+    print("Chargement du modèle de diarisation...")
+    diarize_model = whisperx.DiarizationPipeline(use_auth_token=HF_TOKEN, device=device)
+    print("Modèles chargés avec succès.")
+else:
+    print("Avertissement : Le token Hugging Face n'a pas été trouvé dans les secrets. La diarisation ne fonctionnera pas.")
+    model = None # On met le modèle à None pour gérer l'erreur dans l'interface
+    diarize_model = None
 
-def transcribe_and_diarize(audio_file, hf_token):
+# --- Fonction principale de transcription (simplifiée) ---
+
+def transcribe_and_diarize(audio_file):
     """
-    Cette fonction prend un fichier audio en entrée, le transcrit, identifie les locuteurs (diarisation)
-    et retourne un texte formaté avec timestamps et locuteurs.
+    Cette fonction ne prend plus le token en argument.
+    Elle utilise directement les modèles chargés au démarrage.
     """
-    if not hf_token:
-        return "Erreur : Veuillez fournir un token d'accès Hugging Face pour la diarisation.", ""
-        
+    if not model or not diarize_model:
+        return "Erreur : L'application n'a pas pu démarrer car le HF_TOKEN n'est pas configuré dans les secrets du Space."
+
     try:
-        # 1. Sauvegarder le token Hugging Face pour utiliser le modèle de diarisation
-        HfFolder.save_token(hf_token)
-        print("Token Hugging Face sauvegardé temporairement.")
-        
-        # 2. Charger l'audio depuis le chemin du fichier
-        print(f"Chargement du fichier audio : {audio_file}")
-        if audio_file is None:
-            return "Erreur : Aucun fichier audio fourni.", ""
-            
+        # 1. Charger l'audio
         audio = whisperx.load_audio(audio_file)
         
-        # 3. Transcription avec Whisper
-        print("Début de la transcription...")
+        # 2. Transcription
         result = model.transcribe(audio, batch_size=batch_size)
         
-        # 4. Aligner la transcription avec le modèle d'alignement
-        print("Alignement de la transcription...")
+        # 3. Alignement
         model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
         result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=False)
         
-        # 5. Diarisation (identification des locuteurs)
-        print("Identification des locuteurs (diarisation)...")
-        diarize_model = whisperx.DiarizationPipeline(use_auth_token=hf_token, device=device)
+        # 4. Diarisation
         diarize_segments = diarize_model(audio)
         result = whisperx.assign_word_speakers(diarize_segments, result)
-        print("Diarisation terminée.")
         
-        # 6. Formater la sortie pour une lecture facile
+        # 5. Formatage de la sortie
         output_text = ""
         for segment in result["segments"]:
             start_time = time.strftime('%H:%M:%S', time.gmtime(segment['start']))
@@ -66,25 +63,21 @@ def transcribe_and_diarize(audio_file, hf_token):
             text = segment['text']
             output_text += f"[{start_time}] {speaker}:{text.strip()}\n"
             
-        print("Formatage de la sortie terminé.")
         return output_text
         
     except Exception as e:
-        print(f"Une erreur est survenue : {e}")
-        return f"Une erreur est survenue durant le traitement : {e}", ""
+        return f"Une erreur est survenue durant le traitement : {e}"
 
-# --- Création de l'Interface Utilisateur avec Gradio ---
+# --- Interface Utilisateur (épurée) ---
 
-# Description en Markdown pour l'interface
 description = """
 Bienvenue sur **TranscribeMe** 🎙️
 <br>
 Chargez simplement un fichier audio et obtenez une transcription complète avec identification des locuteurs et horodatage.
 <br>
-**Important** : Pour l'identification des locuteurs, vous devez fournir un [**token d'accès Hugging Face**](https://huggingface.co/settings/tokens).
+*Cette application est sécurisée : le propriétaire a configuré la clé d'accès en arrière-plan.*
 """
 
-# Thème pour un design moderne et épuré
 theme = gr.themes.Soft(
     primary_hue="blue",
     secondary_hue="sky",
@@ -99,12 +92,6 @@ with gr.Blocks(theme=theme, title="TranscribeMe") as app:
 
     with gr.Row():
         with gr.Column(scale=1):
-            hf_token_input = gr.Textbox(
-                label="Token d'accès Hugging Face",
-                placeholder="Collez votre token 'read' ici...",
-                type="password",
-                info="Nécessaire pour l'identification des locuteurs."
-            )
             audio_input = gr.Audio(
                 sources=["upload", "microphone"],
                 type="filepath",
@@ -119,24 +106,13 @@ with gr.Blocks(theme=theme, title="TranscribeMe") as app:
                 lines=20,
                 placeholder="Le résultat de la transcription apparaîtra ici..."
             )
-
+    
+    # On a simplifié l'appel : plus besoin de fournir le token depuis l'interface
     transcribe_button.click(
         fn=transcribe_and_diarize,
-        inputs=[audio_input, hf_token_input],
+        inputs=[audio_input],
         outputs=output_transcription
     )
-    
-    gr.Examples(
-        examples=[
-            [os.path.join(os.path.dirname(__file__), "audio_example.mp3"), "HF_TOKEN_ICI"],
-        ],
-        inputs=[audio_input, hf_token_input],
-        outputs=output_transcription,
-        fn=transcribe_and_diarize,
-        cache_examples=False, # Mettre à True pour le déploiement final
-        label="Exemples (cliquez pour essayer)"
-    )
 
-# --- Lancement de l'application ---
 if __name__ == "__main__":
     app.launch(debug=True)
