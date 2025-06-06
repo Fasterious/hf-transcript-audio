@@ -32,6 +32,8 @@ Une interface de transcription audio avancée utilisant **WhisperX Large-V3** av
 - **Transcription simple** : Texte brut pour lecture
 - **Transcription détaillée** : Avec timestamps et locuteurs
 - **Format SRT** : Sous-titres prêts pour vidéos
+- **Format VTT** : Sous-titres web compatibles
+- **Format JSON** : Données structurées avec métadonnées
 
 ## 🎯 Cas d'usage
 
@@ -55,8 +57,11 @@ Une interface de transcription audio avancée utilisant **WhisperX Large-V3** av
 
 ### Modèle utilisé
 ```bash
-# Équivalent ligne de commande
+# Équivalent ligne de commande (Linux/Windows GPU)
 whisperx audio.m4a --language auto --model large-v3 --diarize --compute_type float16
+
+# Équivalent ligne de commande (Mac/CPU)
+whisperx audio.m4a --language auto --model large-v3 --diarize --compute_type float32
 ```
 
 ### Spécifications
@@ -93,8 +98,8 @@ whisperx audio.m4a --language auto --model large-v3 --diarize --compute_type flo
 
 ### ⏱️ Durée recommandée
 - **Optimal** : 5-30 minutes par fichier
-- **Maximum** : 2 heures (selon la mémoire disponible)
-- **Très long** : Découpez en segments
+- **Maximum** : Jusqu'à 10 heures (selon la mémoire disponible)
+- **Très long** : Traitement automatique par segments
 
 ### 🌍 Langues
 - **Français** : Optimisé pour l'accent français
