@@ -1,12 +1,13 @@
-gradio>=4.0.0
-whisperx>=3.1.0
-torch>=2.0.0
-torchaudio>=2.0.0
-numpy
-scipy
-librosa
-soundfile
-pyannote.audio
-transformers
-accelerate
-datasets
+# Core an UI
+gradio==4.19.2
+torch==2.1.2
+torchaudio==2.1.2
+
+# Transcription and Diarization Engine (WhisperX)
+# WhisperX uses the 'main' branch of whisper for latest updates
+git+https://github.com/m-bain/whisperx.git
+
+# For diarization model
+pyannote.audio==3.1.1
+huggingface_hub==0.20.3
+onnxruntime==1.16.3 # Required for pyannote
