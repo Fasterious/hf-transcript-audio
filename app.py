@@ -2,60 +2,59 @@
 import gradio as gr
 import whisperx
 import torch
-import os # Importé pour accéder aux variables d'environnement
+import os
 import time
-from huggingface_hub import HfApi, HfFolder
+from pyannote.audio import Pipeline # <--- NOUVEL IMPORT
 
 # --- Configuration Initiale ---
-
-# Lire le token d'accès depuis les "Secrets" de Hugging Face
-# os.getenv("HF_TOKEN") va chercher la variable que vous avez définie.
 HF_TOKEN = os.getenv("HF_TOKEN")
-
 device = "cuda" if torch.cuda.is_available() else "cpu"
 batch_size = 16
 compute_type = "float16" if torch.cuda.is_available() else "int8"
 
 # --- Chargement des modèles ---
+model = None
+diarize_pipeline = None
 
-# On ne charge les modèles que si un token est bien présent.
 if HF_TOKEN:
     print("Chargement du modèle Whisper...")
     model = whisperx.load_model("large-v3", device, compute_type=compute_type)
-    print("Chargement du modèle de diarisation...")
-    diarize_model = whisperx.DiarizationPipeline(use_auth_token=HF_TOKEN, device=device)
+    
+    print("Chargement du modèle de diarisation directement depuis Pyannote...")
+    # MODIFICATION CLÉ : On utilise Pipeline.from_pretrained de pyannote
+    diarize_pipeline = Pipeline.from_pretrained(
+        "pyannote/speaker-diarization-3.1",
+        use_auth_token=HF_TOKEN
+    ).to(torch.device(device))
+    
     print("Modèles chargés avec succès.")
 else:
-    print("Avertissement : Le token Hugging Face n'a pas été trouvé dans les secrets. La diarisation ne fonctionnera pas.")
-    model = None # On met le modèle à None pour gérer l'erreur dans l'interface
-    diarize_model = None
+    print("Avertissement : Le token Hugging Face (HF_TOKEN) n'est pas configuré dans les secrets.")
 
-# --- Fonction principale de transcription (simplifiée) ---
-
+# --- Fonction principale de transcription ---
 def transcribe_and_diarize(audio_file):
-    """
-    Cette fonction ne prend plus le token en argument.
-    Elle utilise directement les modèles chargés au démarrage.
-    """
-    if not model or not diarize_model:
+    if not model or not diarize_pipeline:
         return "Erreur : L'application n'a pas pu démarrer car le HF_TOKEN n'est pas configuré dans les secrets du Space."
 
     try:
         # 1. Charger l'audio
         audio = whisperx.load_audio(audio_file)
         
-        # 2. Transcription
+        # 2. Transcription avec WhisperX
         result = model.transcribe(audio, batch_size=batch_size)
         
-        # 3. Alignement
+        # 3. Alignement des segments
         model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
         result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=False)
         
-        # 4. Diarisation
-        diarize_segments = diarize_model(audio)
+        # 4. Diarisation avec Pyannote
+        print("Identification des locuteurs (diarisation)...")
+        diarize_segments = diarize_pipeline(audio_file)
+        
+        # 5. Assignation des locuteurs aux mots
         result = whisperx.assign_word_speakers(diarize_segments, result)
         
-        # 5. Formatage de la sortie
+        # 6. Formatage de la sortie
         output_text = ""
         for segment in result["segments"]:
             start_time = time.strftime('%H:%M:%S', time.gmtime(segment['start']))
@@ -68,23 +67,14 @@ def transcribe_and_diarize(audio_file):
     except Exception as e:
         return f"Une erreur est survenue durant le traitement : {e}"
 
-# --- Interface Utilisateur (épurée) ---
-
+# --- Interface Utilisateur (inchangée) ---
 description = """
 Bienvenue sur **TranscribeMe** 🎙️
 <br>
 Chargez simplement un fichier audio et obtenez une transcription complète avec identification des locuteurs et horodatage.
-<br>
-*Cette application est sécurisée : le propriétaire a configuré la clé d'accès en arrière-plan.*
 """
 
-theme = gr.themes.Soft(
-    primary_hue="blue",
-    secondary_hue="sky",
-    neutral_hue="slate",
-).set(
-    body_background_fill_dark='*neutral_950'
-)
+theme = gr.themes.Soft(primary_hue="blue", secondary_hue="sky", neutral_hue="slate").set(body_background_fill_dark='*neutral_950')
 
 with gr.Blocks(theme=theme, title="TranscribeMe") as app:
     gr.Markdown("# TranscribeMe : Votre Assistant de Transcription Audio")
@@ -92,22 +82,11 @@ with gr.Blocks(theme=theme, title="TranscribeMe") as app:
 
     with gr.Row():
         with gr.Column(scale=1):
-            audio_input = gr.Audio(
-                sources=["upload", "microphone"],
-                type="filepath",
-                label="Chargez votre fichier audio ou enregistrez-vous"
-            )
+            audio_input = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Chargez votre fichier audio")
             transcribe_button = gr.Button("Lancer la Transcription", variant="primary")
-
         with gr.Column(scale=2):
-            output_transcription = gr.Textbox(
-                label="Transcription",
-                interactive=False,
-                lines=20,
-                placeholder="Le résultat de la transcription apparaîtra ici..."
-            )
+            output_transcription = gr.Textbox(label="Transcription", interactive=False, lines=20, placeholder="Le résultat apparaîtra ici...")
     
-    # On a simplifié l'appel : plus besoin de fournir le token depuis l'interface
     transcribe_button.click(
         fn=transcribe_and_diarize,
         inputs=[audio_input],
