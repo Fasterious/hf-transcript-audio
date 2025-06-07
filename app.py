@@ -2,7 +2,6 @@ import gradio as gr
 import whisperx
 import torch
 import os
-import time
 import tempfile
 import zipfile
 
@@ -42,14 +41,13 @@ def get_whisper_model(model_size):
         return loaded_models[model_size]
     
     print(f"Chargement du modèle Whisper : {model_size}")
-    model = whisperx.load_model(model_size, DEVICE, compute_type=COMPUTE_TYPE, language='fr') # Pré-charger en français peut accélérer
+    model = whisperx.load_model(model_size, DEVICE, compute_type=COMPUTE_TYPE)
     loaded_models[model_size] = model
     print(f"Modèle {model_size} chargé.")
     return model
 
 # --- 2. La Fonction de Transcription ---
 
-# CORRECTION APPLIQUÉE ICI : track_tqdm=True
 def transcribe_and_diarize(audio_file_path, language_code, model_size, enable_diarization, progress=gr.Progress(track_tqdm=True)):
     """
     Fonction principale qui prend un fichier audio et retourne les fichiers de transcription.
@@ -67,14 +65,12 @@ def transcribe_and_diarize(audio_file_path, language_code, model_size, enable_di
         progress(0.1, desc="Chargement de l'audio...")
         audio = whisperx.load_audio(audio_file_path)
 
-        # --- Transcription ---
         progress(0.2, desc=f"Transcription avec {model_size}...")
         result = model.transcribe(audio, batch_size=16, language=language_code)
         
         detected_language = result["language"]
         transcription_text = f"Langue détectée: {detected_language}\n\nTranscription:\n" + "\n".join([seg['text'].strip() for seg in result['segments']])
 
-        # --- Diarisation (si activée et si le modèle est chargé) ---
         if enable_diarization and diarize_model:
             progress(0.6, desc="Alignement du modèle...")
             model_a, metadata = whisperx.load_align_model(language_code=detected_language, device=DEVICE)
@@ -84,17 +80,16 @@ def transcribe_and_diarize(audio_file_path, language_code, model_size, enable_di
             diarize_segments = diarize_model(audio)
             result = whisperx.assign_word_speakers(diarize_segments, result)
             
-            # Formatter le texte avec les locuteurs
             transcription_text = f"Langue détectée: {detected_language}\n\nTranscription avec locuteurs:\n"
-            current_speaker = ""
+            current_speaker = None
             full_text_list = []
             for segment in result["segments"]:
                 spk = segment.get("speaker", "LOCUTEUR_INCONNU")
                 if spk != current_speaker:
                     current_speaker = spk
-                    full_text_list.append(f"\n--- {current_speaker} ---")
+                    full_text_list.append(f"\n--- {current_speaker} ---\n")
                 full_text_list.append(segment.get("text", "").strip())
-            transcription_text += " ".join(full_text_list)
+            transcription_text = "".join(full_text_list)
 
         progress(0.9, desc="Génération des fichiers de sortie...")
         
@@ -102,7 +97,9 @@ def transcribe_and_diarize(audio_file_path, language_code, model_size, enable_di
         base_name = os.path.splitext(os.path.basename(audio_file_path))[0]
         
         writer = whisperx.utils.get_writer("all", output_dir)
-        writer(result, base_name, {"max_line_width": 100})
+        
+        # CORRECTION APPLIQUÉE ICI : On enlève le 3ème argument
+        writer(result, base_name)
 
         zip_path = os.path.join(output_dir, f"{base_name}_transcription_files.zip")
         with zipfile.ZipFile(zip_path, 'w') as zf:
@@ -114,7 +111,10 @@ def transcribe_and_diarize(audio_file_path, language_code, model_size, enable_di
         return transcription_text, zip_path
 
     except Exception as e:
-        return f"Une erreur est survenue : {str(e)}", None
+        # Imprimer l'erreur complète dans les logs du Space pour le débogage
+        import traceback
+        traceback.print_exc()
+        return f"Une erreur est survenue : {e}", None
 
 
 # --- 3. L'Interface Gradio ---
@@ -133,7 +133,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as app:
             model_size_dropdown = gr.Dropdown(
                 label="Taille du modèle Whisper",
                 choices=["tiny", "base", "small", "medium", "large-v2", "large-v3"],
-                value="large-v3"
+                value="base" # Mis 'base' par défaut, plus rapide pour les tests
             )
 
             language_dropdown = gr.Dropdown(
