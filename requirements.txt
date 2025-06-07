@@ -1,18 +1,11 @@
-# requirements.txt
-
 # Core ML libraries
 torch
 torchaudio
 
-# WhisperX from git
+# WhisperX from git. 
+# This will automatically pull in its required dependencies,
+# including the correct version of pyannote.audio.
 git+https://github.com/m-bain/whisperx.git
-
-# Pin pyannote.audio to a specific, stable version for maximum compatibility
-# This is the recommended stable version.
-pyannote.audio==3.1.1
-
-# To experiment with the latest version, comment the line above and uncomment the line below.
-# pyannote.audio
 
 # Web Interface & Utilities
 gradio
