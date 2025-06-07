@@ -27,7 +27,7 @@ diarize_pipeline = None
 try:
     if HF_TOKEN:
         logging.info("Chargement du modèle Whisper...")
-        model = whisperx.load_model("large-v3", device, compute_type=compute_type)
+        model = whisperx.load_model("tiny", device, compute_type=compute_type)
         
         logging.info("Chargement du modèle de diarisation depuis Pyannote...")
         diarize_pipeline = Pipeline.from_pretrained(
