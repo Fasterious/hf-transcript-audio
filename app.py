@@ -1,124 +1,187 @@
-# Importation des bibliothèques nécessaires
 import gradio as gr
 import whisperx
 import torch
 import os
 import time
-from pyannote.audio import Pipeline
-import logging
-import pandas as pd # <-- CORRECTION : Importation de pandas
+import tempfile
+import zipfile
 
-# --- 1. CONFIGURATION DU LOGGING ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+# --- 1. Configuration et Chargement des Modèles ---
 
-# --- Configuration Initiale ---
-HF_TOKEN = os.getenv("HF_TOKEN")
-device = "cuda" if torch.cuda.is_available() else "cpu"
-batch_size = 16
-compute_type = "float16" if torch.cuda.is_available() else "int8"
+# Déterminer le device (GPU si disponible, sinon CPU)
+# Sur les Spaces HF, le type de hardware est défini dans les paramètres du Space.
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+COMPUTE_TYPE = "float16" if torch.cuda.is_available() else "int8"
+print(f"Device: {DEVICE}, Compute Type: {COMPUTE_TYPE}")
 
-# --- Chargement des modèles ---
-model = None
-diarize_pipeline = None
+# Récupérer le token HF depuis les secrets du Space
+HF_TOKEN = os.environ.get("HF_TOKEN")
+if HF_TOKEN is None:
+    print("Avertissement : Le token Hugging Face n'est pas configuré. La diarisation peut échouer.")
+    # On peut continuer sans token si on n'utilise pas la diarisation, 
+    # mais pyannote en a besoin pour télécharger ses modèles.
 
-try:
-    if HF_TOKEN:
-        logging.info("Chargement du modèle Whisper...")
-        model = whisperx.load_model("tiny", device, compute_type=compute_type)
-        
-        logging.info("Chargement du modèle de diarisation depuis Pyannote...")
-        diarize_pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            use_auth_token=HF_TOKEN
-        ).to(torch.device(device))
-        
-        logging.info("Modèles chargés avec succès.")
-    else:
-        logging.warning("Le token Hugging Face (HF_TOKEN) n'est pas configuré. La diarisation sera désactivée.")
-except Exception as e:
-    logging.error(f"Erreur lors du chargement des modèles : {e}", exc_info=True)
+# Charger le modèle de diarisation une seule fois au démarrage de l'app
+# Cela évite de le recharger à chaque appel, ce qui est très lent.
+diarize_model = None
+if HF_TOKEN:
+    try:
+        print("Chargement du modèle de diarisation...")
+        diarize_model = whisperx.DiarizationPipeline(use_auth_token=HF_TOKEN, device=DEVICE)
+        print("Modèle de diarisation chargé.")
+    except Exception as e:
+        print(f"Erreur lors du chargement du modèle de diarisation : {e}")
+        # L'app pourra continuer sans la fonctionnalité de diarisation
+        diarize_model = None
+else:
+    print("Pas de token HF, la diarisation sera désactivée.")
 
+# Dictionnaire pour garder en cache les modèles Whisper chargés
+# Clé: taille du modèle (ex: 'large-v3'), Valeur: objet modèle
+loaded_models = {}
 
-# --- Fonction principale de transcription ---
-def transcribe_and_diarize(audio_file):
-    if not model:
-        logging.error("Le modèle Whisper n'est pas chargé. Impossible de continuer.")
-        return "Erreur critique : Le modèle de transcription n'a pas pu être chargé. Vérifiez les logs."
+def get_whisper_model(model_size):
+    """Charge un modèle Whisper ou le récupère depuis le cache."""
+    if model_size in loaded_models:
+        print(f"Récupération du modèle {model_size} depuis le cache.")
+        return loaded_models[model_size]
+    
+    print(f"Chargement du modèle Whisper : {model_size}")
+    # Le chargement du modèle peut prendre du temps la première fois
+    model = whisperx.load_model(model_size, DEVICE, compute_type=COMPUTE_TYPE)
+    loaded_models[model_size] = model
+    print(f"Modèle {model_size} chargé.")
+    return model
 
-    logging.info(f"Début du traitement pour le fichier : {audio_file}")
+# --- 2. La Fonction de Transcription ---
+
+def transcribe_and_diarize(audio_file_path, language_code, model_size, enable_diarization, progress=gr.Progress(track_ τότε=True)):
+    """
+    Fonction principale qui prend un fichier audio et retourne les fichiers de transcription.
+    """
+    if audio_file_path is None:
+        return "Veuillez téléverser un fichier audio.", None
+
+    progress(0, desc="Chargement de l'audio...")
     
     try:
-        logging.info("Étape 1/6 : Chargement du fichier audio...")
-        audio = whisperx.load_audio(audio_file)
+        # Charger le modèle Whisper demandé
+        model = get_whisper_model(model_size)
 
-        logging.info("Étape 2/6 : Lancement de la transcription Whisper...")
-        result = model.transcribe(audio, batch_size=batch_size)
+        # Charger l'audio depuis le chemin temporaire fourni par Gradio
+        audio = whisperx.load_audio(audio_file_path)
 
-        logging.info("Étape 3/6 : Alignement des segments de la transcription...")
-        model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
-        result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=False)
-
-        if diarize_pipeline:
-            logging.info("Étape 4/6 : Identification des locuteurs (diarisation)...")
-            diarize_segments = diarize_pipeline(audio_file, min_speakers=2, max_speakers=5) # Ajout de min/max speakers est une bonne pratique
-            logging.info("Diarisation terminée.")
-            
-            # --- CORRECTION : Conversion de la sortie de pyannote en DataFrame ---
-            # On crée un DataFrame avec les colonnes 'start', 'end', 'speaker' que whisperx comprend.
-            diarization_df = pd.DataFrame(diarize_segments.itertracks(yield_label=True), columns=['segment', 'label', 'speaker'])
-            diarization_df['start'] = diarization_df['segment'].apply(lambda x: x.start)
-            diarization_df['end'] = diarization_df['segment'].apply(lambda x: x.end)
-            # On ne garde que les colonnes nécessaires pour whisperx
-            diarization_df = diarization_df[['start', 'end', 'speaker']]
-            # --- FIN DE LA CORRECTION ---
-            
-            logging.info("Étape 5/6 : Assignation des locuteurs aux mots...")
-            # CORRECTION : On passe le DataFrame formaté au lieu de l'objet pyannote brut
-            result = whisperx.assign_word_speakers(diarization_df, result)
-            logging.info("Assignation des locuteurs terminée.")
-        else:
-            logging.info("Étape 4/6 & 5/6 : Diarisation et assignation des locuteurs ignorées (pas de token).")
-
-        logging.info("Étape 6/6 : Formatage du texte final...")
-        output_text = ""
-        for segment in result["segments"]:
-            start_time = time.strftime('%H:%M:%S', time.gmtime(segment['start']))
-            speaker = segment.get('speaker', 'LOCUTEUR') 
-            text = segment['text']
-            output_text += f"[{start_time}] {speaker}:{text.strip()}\n"
-        logging.info("Formatage terminé. Traitement réussi !")
+        # --- Transcription ---
+        progress(0.2, desc=f"Transcription avec {model_size}...")
+        result = model.transcribe(audio, batch_size=16, language=language_code)
         
-        return output_text
+        transcription_text = "Transcription:\n" + "\n".join([seg['text'] for seg in result['segments']])
+
+        # --- Diarisation (si activée et si le modèle est chargé) ---
+        if enable_diarization and diarize_model:
+            progress(0.6, desc="Alignement du modèle...")
+            # Aligner les timings des mots
+            model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=DEVICE)
+            result = whisperx.align(result["segments"], model_a, metadata, audio, DEVICE, return_char_alignments=False)
+            
+            progress(0.8, desc="Identification des locuteurs (diarisation)...")
+            # Assigner les locuteurs
+            diarize_segments = diarize_model(audio)
+            result = whisperx.assign_word_speakers(diarize_segments, result)
+            
+            # Formatter le texte avec les locuteurs
+            transcription_text = "Transcription avec locuteurs:\n"
+            current_speaker = ""
+            for segment in result["segments"]:
+                if "speaker" in segment and segment["speaker"] != current_speaker:
+                    current_speaker = segment["speaker"]
+                    transcription_text += f"\n--- {current_speaker} ---\n"
+                transcription_text += segment.get("text", "").strip() + " "
+
+        progress(0.9, desc="Génération des fichiers de sortie...")
         
+        # Créer un dossier temporaire pour les fichiers de sortie
+        output_dir = tempfile.mkdtemp()
+        base_name = os.path.splitext(os.path.basename(audio_file_path))[0]
+        
+        # Écrire les fichiers de sortie
+        writer = whisperx.utils.get_writer("all", output_dir)
+        writer(result, base_name) # 'all' crée .txt, .srt, .vtt, .tsv, .json
+
+        # Zipper tous les fichiers de sortie pour un téléchargement facile
+        zip_path = os.path.join(output_dir, f"{base_name}_transcription_files.zip")
+        with zipfile.ZipFile(zip_path, 'w') as zf:
+            for file in os.listdir(output_dir):
+                if file.endswith(('.txt', '.srt', '.vtt', '.tsv', '.json')):
+                    zf.write(os.path.join(output_dir, file), arcname=file)
+        
+        progress(1, desc="Terminé !")
+        return transcription_text, zip_path
+
     except Exception as e:
-        logging.error(f"Une erreur inattendue est survenue pendant la transcription: {e}", exc_info=True)
-        return "Une erreur est survenue durant le traitement. Veuillez consulter les logs pour plus de détails."
+        return f"Une erreur est survenue : {str(e)}", None
 
-# --- Interface Utilisateur (inchangée) ---
-description = "..." # Le reste du fichier est identique
 
-with gr.Blocks(title="TranscribeMe") as app:
-   # ...
-   # Le reste du fichier est identique...
-   # ...
-    gr.Markdown("# TranscribeMe : Votre Assistant de Transcription Audio")
-    gr.Markdown(description)
+# --- 3. L'Interface Gradio ---
+
+with gr.Blocks(theme=gr.themes.Soft()) as app:
+    gr.Markdown("# Outil de Transcription Audio avec WhisperX & Diarisation")
+    gr.Markdown(
+        "Déposez un fichier audio ou vidéo, choisissez les options, et lancez la transcription. "
+        "Vous obtiendrez le texte transcrit ainsi qu'un fichier `.zip` contenant les formats `.txt`, `.srt`, `.json`, etc."
+    )
 
     with gr.Row():
         with gr.Column(scale=1):
-            audio_input = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Chargez votre fichier audio")
-            transcribe_button = gr.Button("Lancer la Transcription", variant="primary")
-        with gr.Column(scale=2):
-            output_transcription = gr.Textbox(label="Transcription", interactive=False, lines=20, placeholder="Le résultat apparaîtra ici...")
-    
-    transcribe_button.click(
-        fn=transcribe_and_diarize,
-        inputs=[audio_input],
-        outputs=output_transcription
-    )
+            audio_input = gr.Audio(
+                label="Fichier Audio/Vidéo",
+                type="filepath" # 'filepath' est plus stable pour les gros fichiers
+            )
+            
+            model_size_dropdown = gr.Dropdown(
+                label="Taille du modèle Whisper",
+                choices=["tiny", "base", "small", "medium", "large-v2", "large-v3"],
+                value="large-v3"
+            )
 
-if __name__ == "__main__":
-    app.launch(debug=True)
+            language_dropdown = gr.Dropdown(
+                label="Langue de l'audio (Code ISO 639-1)",
+                choices=["fr", "en", "es", "de", "it", "auto"],
+                value="fr",
+                info="Mettez 'auto' pour la détection automatique."
+            )
+            
+            diarization_checkbox = gr.Checkbox(
+                label="Activer la diarisation (identification des locuteurs)",
+                value=True if diarize_model else False,
+                interactive=True if diarize_model else False,
+                info="Nécessite un modèle pyannote.audio. Désactivé si le token HF est manquant."
+            )
+
+            submit_btn = gr.Button("Lancer la Transcription", variant="primary")
+
+        with gr.Column(scale=2):
+            output_text = gr.Textbox(label="Résultat de la Transcription", lines=15, interactive=False)
+            output_files = gr.File(label="Télécharger les fichiers (.zip)", interactive=False)
+
+    submit_btn.click(
+        fn=transcribe_and_diarize,
+        inputs=[audio_input, language_dropdown, model_size_dropdown, diarization_checkbox],
+        outputs=[output_text, output_files]
+    )
+    
+    gr.Examples(
+        examples=[
+            ["./examples/test_audio_fr.mp3", "fr", "base", True],
+            ["./examples/test_audio_en.wav", "en", "small", False],
+        ],
+        inputs=[audio_input, language_dropdown, model_size_dropdown, diarization_checkbox],
+        outputs=[output_text, output_files],
+        fn=transcribe_and_diarize,
+        cache_examples=True # Mettre en cache pour des démos rapides
+    )
+    # Pour que les exemples fonctionnent, créez un dossier "examples" dans votre Space
+    # et placez-y des fichiers audio.
+
+# Lancer l'application
+app.launch(debug=True)
