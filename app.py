@@ -4,6 +4,7 @@ import torch
 import os
 import tempfile
 import zipfile
+import traceback
 
 # --- 1. Configuration et Chargement des Modèles ---
 
@@ -58,8 +59,8 @@ def transcribe_and_diarize(audio_file_path, language_code, model_size, enable_di
     if language_code == "auto":
         language_code = None # WhisperX attend None pour la détection auto
 
-    progress(0, desc="Chargement du modèle Whisper...")
     try:
+        progress(0, desc="Chargement du modèle Whisper...")
         model = get_whisper_model(model_size)
         
         progress(0.1, desc="Chargement de l'audio...")
@@ -98,8 +99,9 @@ def transcribe_and_diarize(audio_file_path, language_code, model_size, enable_di
         
         writer = whisperx.utils.get_writer("all", output_dir)
         
-        # CORRECTION APPLIQUÉE ICI : On enlève le 3ème argument
-        writer(result, base_name)
+        # CORRECTION FINALE : On passe un dictionnaire 'options' vide car il est requis.
+        options = {}
+        writer(result, base_name, options)
 
         zip_path = os.path.join(output_dir, f"{base_name}_transcription_files.zip")
         with zipfile.ZipFile(zip_path, 'w') as zf:
@@ -111,16 +113,15 @@ def transcribe_and_diarize(audio_file_path, language_code, model_size, enable_di
         return transcription_text, zip_path
 
     except Exception as e:
-        # Imprimer l'erreur complète dans les logs du Space pour le débogage
-        import traceback
+        # Affiche l'erreur complète dans les logs du Space pour un débogage facile
         traceback.print_exc()
-        return f"Une erreur est survenue : {e}", None
+        return f"Une erreur critique est survenue : {e}", None
 
 
 # --- 3. L'Interface Gradio ---
 
 with gr.Blocks(theme=gr.themes.Soft()) as app:
-    gr.Markdown("# Outil de Transcription Audio avec WhisperX & Diarisation")
+    gr.Markdown("<h1>Outil de Transcription Audio avec WhisperX & Diarisation</h1>")
     gr.Markdown(
         "Déposez un fichier audio ou vidéo, choisissez les options, et lancez la transcription. "
         "Vous obtiendrez le texte transcrit ainsi qu'un fichier `.zip` contenant les formats `.txt`, `.srt`, `.json`, etc."
@@ -133,7 +134,8 @@ with gr.Blocks(theme=gr.themes.Soft()) as app:
             model_size_dropdown = gr.Dropdown(
                 label="Taille du modèle Whisper",
                 choices=["tiny", "base", "small", "medium", "large-v2", "large-v3"],
-                value="base" # Mis 'base' par défaut, plus rapide pour les tests
+                value="base", # 'base' est rapide pour tester, l'utilisateur peut choisir 'large-v3' pour la meilleure qualité
+                info="Pour une meilleure qualité, utilisez 'large-v3'."
             )
 
             language_dropdown = gr.Dropdown(
