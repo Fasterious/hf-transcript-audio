@@ -1,20 +1,17 @@
-# --- Fichier de dépendances flexible pour TranscribeMe ---
-
-# Pour l'interface utilisateur. Pas de version spécifiée pour obtenir la dernière compatible.
-gradio
-
-# Le moteur de PyTorch. Laisser le choix à l'environnement (ex: Hugging Face)
-# pour résoudre la version la plus appropriée, notamment pour la compatibilité CUDA.
+# Core ML libraries
 torch
 torchaudio
 
-# Le moteur de transcription, directement depuis sa source pour avoir la dernière version.
+# Whisper and WhisperX for transcription and alignment
+openai-whisper
 git+https://github.com/m-bain/whisperx.git
 
-# Dépendances dont on connaît les exigences minimales à cause de whisperx.
-# On laisse le choix, mais à partir d'une version minimale pour éviter les conflits.
-pyannote.audio>=3.3.2
-onnxruntime>=1.19.0
+# Pyannote for speaker diarization
+--find-links https://data.pyannote.audio/pyannote-audio-3.1.1.html
+pyannote.audio
 
-# Utilitaires pour l'écosystème Hugging Face.
-huggingface_hub
+# Web Interface
+gradio
+
+# Utilities
+ffmpeg-python
