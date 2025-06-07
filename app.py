@@ -5,10 +5,10 @@ import torch
 import os
 import time
 from pyannote.audio import Pipeline
-import logging # <-- NOUVEL IMPORT pour le logging
+import logging
+import pandas as pd # <-- CORRECTION : Importation de pandas
 
 # --- 1. CONFIGURATION DU LOGGING ---
-# On configure le logger pour qu'il affiche la date, le niveau du log, et le message.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -24,7 +24,6 @@ compute_type = "float16" if torch.cuda.is_available() else "int8"
 model = None
 diarize_pipeline = None
 
-# On utilise un bloc try/except pour attraper les erreurs de chargement de modèle
 try:
     if HF_TOKEN:
         logging.info("Chargement du modèle Whisper...")
@@ -52,42 +51,41 @@ def transcribe_and_diarize(audio_file):
     logging.info(f"Début du traitement pour le fichier : {audio_file}")
     
     try:
-        # Étape 1: Charger l'audio
         logging.info("Étape 1/6 : Chargement du fichier audio...")
         audio = whisperx.load_audio(audio_file)
-        logging.info("Fichier audio chargé.")
 
-        # Étape 2: Transcription avec WhisperX
         logging.info("Étape 2/6 : Lancement de la transcription Whisper...")
         result = model.transcribe(audio, batch_size=batch_size)
-        logging.info("Transcription terminée.")
 
-        # Étape 3: Alignement des segments
         logging.info("Étape 3/6 : Alignement des segments de la transcription...")
         model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
         result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=False)
-        logging.info("Alignement terminé.")
 
-        # Étape 4: Diarisation (si disponible)
         if diarize_pipeline:
             logging.info("Étape 4/6 : Identification des locuteurs (diarisation)...")
-            diarize_segments = diarize_pipeline(audio_file)
+            diarize_segments = diarize_pipeline(audio_file, min_speakers=2, max_speakers=5) # Ajout de min/max speakers est une bonne pratique
             logging.info("Diarisation terminée.")
             
-            # Étape 5: Assignation des locuteurs
+            # --- CORRECTION : Conversion de la sortie de pyannote en DataFrame ---
+            # On crée un DataFrame avec les colonnes 'start', 'end', 'speaker' que whisperx comprend.
+            diarization_df = pd.DataFrame(diarize_segments.itertracks(yield_label=True), columns=['segment', 'label', 'speaker'])
+            diarization_df['start'] = diarization_df['segment'].apply(lambda x: x.start)
+            diarization_df['end'] = diarization_df['segment'].apply(lambda x: x.end)
+            # On ne garde que les colonnes nécessaires pour whisperx
+            diarization_df = diarization_df[['start', 'end', 'speaker']]
+            # --- FIN DE LA CORRECTION ---
+            
             logging.info("Étape 5/6 : Assignation des locuteurs aux mots...")
-            result = whisperx.assign_word_speakers(diarize_segments, result)
+            # CORRECTION : On passe le DataFrame formaté au lieu de l'objet pyannote brut
+            result = whisperx.assign_word_speakers(diarization_df, result)
             logging.info("Assignation des locuteurs terminée.")
         else:
             logging.info("Étape 4/6 & 5/6 : Diarisation et assignation des locuteurs ignorées (pas de token).")
 
-
-        # Étape 6: Formatage de la sortie
         logging.info("Étape 6/6 : Formatage du texte final...")
         output_text = ""
         for segment in result["segments"]:
             start_time = time.strftime('%H:%M:%S', time.gmtime(segment['start']))
-            # Si le locuteur n'a pas été assigné, on met 'LOCUTEUR' par défaut
             speaker = segment.get('speaker', 'LOCUTEUR') 
             text = segment['text']
             output_text += f"[{start_time}] {speaker}:{text.strip()}\n"
@@ -96,7 +94,6 @@ def transcribe_and_diarize(audio_file):
         return output_text
         
     except Exception as e:
-        # --- AMÉLIORATION MAJEURE DE LA CAPTURE D'ERREUR ---
         logging.error(f"Une erreur inattendue est survenue pendant la transcription: {e}", exc_info=True)
         return "Une erreur est survenue durant le traitement. Veuillez consulter les logs pour plus de détails."
 
