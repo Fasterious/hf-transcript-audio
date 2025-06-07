@@ -1,17 +1,20 @@
+# requirements.txt
+
 # Core ML libraries
 torch
 torchaudio
 
-# Whisper and WhisperX for transcription and alignment
-openai-whisper
+# WhisperX from git
 git+https://github.com/m-bain/whisperx.git
 
-# Pyannote for speaker diarization
---find-links https://data.pyannote.audio/pyannote-audio-3.1.1.html
-pyannote.audio
+# Pin pyannote.audio to a specific, stable version for maximum compatibility
+# This is the recommended stable version.
+pyannote.audio==3.1.1
 
-# Web Interface
+# To experiment with the latest version, comment the line above and uncomment the line below.
+# pyannote.audio
+
+# Web Interface & Utilities
 gradio
-
-# Utilities
 ffmpeg-python
+openai-whisper
